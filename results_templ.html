@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Výsledky - {{ event.id }}</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
+        @page {
+            size: A4;
+            margin: 7mm 7mm 7mm 7mm;
+        }
+
+        @media screen {
+            #footer {
+                display: none;
+            }
+        }
+
+        @media print {
+            #footer {
+                position: fixed;
+                bottom: 0;
+                width: 100%;
+                text-align: center;
+            }
+        }
+
+
+        * {
+            font-family: "Space Mono", monospace;
+        }
+
+        h1 {
+            font-size: 1.75em;
+            text-align: center;
+            margin-bottom: 0;
+        }
+
+        h2 {
+            font-size: 1.5em;
+            text-align: center;
+            margin-top: 0.5em;
+        }
+
+        h3 {
+            margin-bottom: 0.25em;
+            margin-top: 0.5em;
+            font-size: 1.3em;
+        }
+
+        td {
+            padding-right: 2em;
+            white-space: nowrap;
+        }
+
+        .inactive {
+            font-style: italic;
+            color: darkgray;
+        }
+    </style>
+</head>
+
+<body>
+<h1>Celkové výsledky</h1>
+{% for stage in event.stages %}
+    <span><b>E{{ loop.index }}</b>: {{ stage.name }} - {{ stage.date }}, limit: {{ stage.limit }} min, pásmo: {{ stage.band }}</span>
+    <br>
+{% endfor %}
+<br>
+<span>Pro zařazení do celkových výsledků musí být závodník hodnocen ve všech etapách v jedné kategorii.</span><br>
+<span>Metoda vyhodnocení: {{ method }}</span>
+{% if dsq_without_ok_result %}
+    <h3 class="inactive">Nezařazeni kvůli nedostatku OK výsledků:</h3>
+    <ul class="inactive">
+        {% for person in dsq_without_ok_result %}
+            <li>{{ person }}</li>
+        {% endfor %}
+    </ul>
+    <br><br>
+{% endif %}
+{% if dsq_multiple_categories %}
+    <h3 class="inactive">Nezařazeni kvůli účasti ve více kategoriích:</h3>
+    <ul class="inactive">
+        {% for person in dsq_multiple_categories %}
+            <li>{{ person }}</li>
+        {% endfor %}
+    </ul>
+    <br><br>
+{% endif %}
+<table>
+    {% for category in categories %}
+        <tbody style="page-break-inside: avoid;">
+        <tr>
+            <td colspan="2">
+                <h3 style="display: inline-block;">{{ category.name }}</h3>
+            </td>
+            {% if loop.index0 == 0 %}
+                <td>&Sigma; času</td>
+                <td>&Sigma; TX</td>
+                <td>&Sigma; um.</td>
+                {% for stage in event.stages %}
+                    <td>E{{ loop.index }}</td>
+                {% endfor %}
+            {% endif %}
+        </tr>
+        {% for runner in category.runners %}
+            <tr>
+                <td>{{ runner.place }}</td>
+                <td>{{ runner.name }}</td>
+                <td>{{ runner.time }}</td>
+                <td>{{ runner.tx }}</td>
+                <td>{{ runner.places }}</td>
+                {% for result in runner.results %}
+                    <td>{{ result }}</td>
+                {% endfor %}
+            </tr>
+        {% endfor %}
+        </tbody>
+    {% endfor %}
+</table>
+<span id="footer">StageHelper pro JJ ARDFEvent, &copy; Jakub Jiroutek</span>
+</body>
+
+</html>

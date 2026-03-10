@@ -1,26 +1,41 @@
-import csv
+import glob
+import glob
+import json
+import uuid
 from datetime import timedelta
+from enum import Enum
 from pathlib import Path
 
+import qtawesome as qta
 import sqlalchemy
-from PySide6.QtWidgets import QWidget, QLineEdit, QFormLayout, QRadioButton, QPushButton, QMessageBox, QFileDialog
-from sqlalchemy import Select
+from PySide6.QtCore import Qt, QCoreApplication
+from PySide6.QtWidgets import QWidget, QFormLayout, QRadioButton, QMessageBox, QFileDialog, \
+    QListWidget, QVBoxLayout, QListWidgetItem, QLabel, QInputDialog, QHBoxLayout
+from dateutil.parser import parser
+from jinja2 import FileSystemLoader, select_autoescape, Environment
+from sqlalchemy import Select, create_engine
 from sqlalchemy.orm import Session
 
+import api
+import plugin
 import results
 from models import Category
 from plugin import Plugin
+from ui.qtaiconbutton import QTAIconButton
 
 
 class StagesPlugin(Plugin):
     name = "StageHelper"
     author = "JJ"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def __init__(self, mw):
         super().__init__(mw)
-        self.stage_helper = StagesHelperWindow()
-        self.register_ww_menu("Etapový závod")
+        self.stage_helper = StagesHelperWindow(mw)
+        self.register_mw_tab(self.stage_helper, qta.icon("mdi6.calendar-blank-multiple"))
+        self.register_report(plugin.ReportType.RESULTS, "Celkové výsledky etapového závodu",
+                             "Vypočítá celkové výsledky etapového závodu", "StagesHelper", self.stage_helper.calculate,
+                             {})
 
     def on_readout(self, sinum: int):
         pass
@@ -29,47 +44,212 @@ class StagesPlugin(Plugin):
         pass
 
     def on_menu(self):
-        self.stage_helper.show()
+        pass
+
+
+def _create_folder():
+    rootdir = Path.home() / ".ardfevent" / "stages"
+
+    if not rootdir.exists():
+        rootdir.mkdir()
+
+
+class StageClickMode(Enum):
+    NONE = 0
+    DELETE = 1
 
 
 class StagesHelperWindow(QWidget):
-    def __init__(self):
+    def __init__(self, mw):
         super().__init__()
+
+        self.mode = StageClickMode.NONE
+        self.file = None
+
+        self.mw = mw
+        self.pw = None
 
         self.setWindowTitle("Etapový závod")
 
-        lay = QFormLayout()
+        lay = QVBoxLayout()
         self.setLayout(lay)
 
-        self.stages_edit = QLineEdit()
-        lay.addRow("ID závodů oddělené středníkem", self.stages_edit)
+        self.name_lbl = QLabel()
+        lay.addWidget(self.name_lbl)
+
+        btn_lay = QHBoxLayout()
+        lay.addLayout(btn_lay)
+
+        self.new_btn = QTAIconButton("mdi6.plus", "Nový etapový závod")
+        self.new_btn.clicked.connect(self._new_file)
+        btn_lay.addWidget(self.new_btn)
+
+        self.add_btn = QTAIconButton("mdi6.calendar-plus-outline", "Přidat etapu")
+        self.add_btn.clicked.connect(self._add_stage)
+        btn_lay.addWidget(self.add_btn)
+
+        self.del_btn = QTAIconButton("mdi6.trash-can-outline", "Smazat etapu (klik)")
+        self.del_btn.clicked.connect(self._delete_enable)
+        btn_lay.addWidget(self.del_btn)
+
+        self.stages_list = QListWidget()
+        self.stages_list.itemClicked.connect(self._stage_clicked)
+        lay.addWidget(self.stages_list)
+
+        form_lay = QFormLayout()
+        lay.addLayout(form_lay)
 
         self.timetx_radio = QRadioButton("Součet kontrol, příp. časů")
-        lay.addRow(self.timetx_radio)
+        form_lay.addRow(self.timetx_radio)
 
         self.basic_radio = QRadioButton("Prostý součet umístění")
-        lay.addRow(self.basic_radio)
+        form_lay.addRow(self.basic_radio)
 
-        start_btn = QPushButton("Vybrat výstup a spočítat")
-        start_btn.clicked.connect(self.calculate)
-        lay.addRow(start_btn)
+    def _show(self):
+        self.stages_list.clear()
+        _create_folder()
 
-    def calculate(self):
-        fn = QFileDialog.getSaveFileName(
-            self,
-            "Export CSV",
-            filter="CSV (*.csv)",
-        )[0]
+        if fileuuid := api.get_basic_info(self.mw.db).get("stages_uuid"):
+            for file in glob.glob((Path.home() / ".ardfevent" / "stages" / "*.json").as_posix()):
+                with open(file, "r") as f:
+                    try:
+                        if contents := json.load(f)["stages"]:
+                            f = next((f for f in contents if (f["uuid"] == fileuuid or f["url"] == self.mw.db.url)),
+                                     None)
+                            if f:
+                                self._open_file(file)
+                            self.stages_list.setEnabled(True)
+                            self.basic_radio.setEnabled(True)
+                            self.timetx_radio.setEnabled(True)
+                            self.new_btn.setEnabled(True)
+                            self.add_btn.setEnabled(True)
+                            self.del_btn.setEnabled(True)
+                            return
+                    except:
+                        pass
+        else:
+            api.set_basic_info(self.mw.db, {"stages_uuid": uuid.uuid4().hex})
+        self.stages_list.setEnabled(False)
+        self.basic_radio.setEnabled(False)
+        self.timetx_radio.setEnabled(False)
+        self.new_btn.setEnabled(False)
+        self.add_btn.setEnabled(False)
+        self.del_btn.setEnabled(False)
+        self.name_lbl.setText("Nejdříve založte etapový závod")
 
-        if fn:
-            if not fn.endswith(".csv"):
-                fn += ".csv"
+    def _open_file(self, fp: str):
+        with open(fp, "r") as f:
+            try:
+                data = json.load(f)
+                match data["mode"]:
+                    case 0:
+                        self.timetx_radio.click()
+                    case 1:
+                        self.basic_radio.click()
+                    case _:
+                        pass
+
+                stages = []
+                for stage in data["stages"]:
+                    eng = create_engine(stage["url"])
+                    bi = api.get_basic_info(eng)
+                    stages.append((bi["name"], parser().parse(bi["date_tzero"]), stage["url"]))
+
+                stages.sort(key=lambda x: x[0:2][::-1])
+
+                self.stages_list.clear()
+
+                for stage in stages:
+                    item = QListWidgetItem(f"{stage[1].strftime("%d. %m. %Y %H:%M")} - {stage[0]}")
+                    item.setData(Qt.UserRole, stage[2])
+                    self.stages_list.addItem(item)
+
+                self.name_lbl.setText(f"ID etapového závodu: {Path(fp).stem}")
+
+                self.file = fp
+
+            except:
+                pass
+
+    def _add_stage(self):
+        if dbfile := \
+                QFileDialog.getOpenFileName(self, QCoreApplication.translate("MainWindow", "Otevřít závod"), "",
+                                            "ARDFEvent databáze (*.ardf);;ARDFEvent databáze - pre 1.1 (*.sqlite);;Všechny soubory (*)")[
+                    0]:
+            it = QListWidgetItem("")
+            it.setData(Qt.UserRole, f"sqlite:///{dbfile}")
+            self.stages_list.addItem(it)
+            self._save()
+            self._show()
         else:
             return
 
-        self.close()
+    def _new_file(self):
+        fid, ok = QInputDialog.getText(
+            self,
+            "Nový etapový závod",
+            "Zadejte ID (jméno souboru) etapového závodu (např. PP_2025):",
+        )
+        fp = Path.home() / ".ardfevent" / "stages" / f"{fid}.json"
+        if fp.exists():
+            QMessageBox.critical(self, "Chybné ID", "Takové ID má již jiný závod.")
+            return
 
-        races = self.stages_edit.text().split(";")
+        if fileuuid := api.get_basic_info(self.mw.db).get("stages_uuid"):
+            pass
+        else:
+            fileuuid = uuid.uuid4().hex
+            api.set_basic_info(self.mw.db, {"stages_uuid": fileuuid})
+
+        with open(fp, "w+") as f:
+            json.dump({"mode": 0, "stages": [{"url": str(self.mw.db.url), "uuid": fileuuid}]}, f)
+
+        self._show()
+
+    def _stage_clicked(self, item: QListWidgetItem):
+        match self.mode:
+            case StageClickMode.NONE:
+                pass
+            case StageClickMode.DELETE:
+                self.stages_list.takeItem(self.stages_list.row(item))
+                del item
+                self._save()
+                self._show()
+        self.mode = StageClickMode.NONE
+
+    def _delete_enable(self):
+        self.mode = StageClickMode.DELETE
+
+    def _save(self):
+        mode = int(self.basic_radio.isChecked())
+        stages = []
+        for item in [self.stages_list.item(i) for i in range(self.stages_list.count())]:
+            eng = create_engine(item.data(Qt.UserRole))
+            fileuuid = api.get_basic_info(eng).get("stages_uuid")
+            if not fileuuid:
+                fileuuid = uuid.uuid4().hex
+                api.set_basic_info(eng, {"stages_uuid": fileuuid})
+            stages.append({"url": item.data(Qt.UserRole), "uuid": fileuuid})
+        with open(self.file, "w+") as f:
+            json.dump({"mode": mode, "stages": stages}, f)
+
+    def _get_html_event(self):
+        stages = []
+        for item in [self.stages_list.item(i) for i in range(self.stages_list.count())]:
+            eng = create_engine(item.data(Qt.UserRole))
+            bi = api.get_basic_info(eng)
+            stages.append(
+                {"name": bi.get("name"), "date": parser().parse(bi.get("date_tzero")).strftime("%d. %m. %Y, %H:%M"),
+                 "limit": bi.get("limit"), "band": bi["band"]})
+        return {"id": Path(self.file).stem, "stages": stages}
+
+    def calculate(self, db):
+        self._show()
+        if not self.stages_list.count():
+            QMessageBox.warning(self, "Chyba", "Nejsou přidány žádné etapy.")
+            return ""
+
+        races = [self.stages_list.item(i).data(Qt.UserRole) for i in range(self.stages_list.count())]
 
         headers = []
 
@@ -79,8 +259,7 @@ class StagesHelperWindow(QWidget):
         for e, race in enumerate(races):
             headers.append(f"E{e + 1}")
             try:
-                file = (Path.home() / ".ardfevent" / f"{race}.sqlite")
-                db = sqlalchemy.create_engine(f"sqlite:///{file}", max_overflow=-1)
+                db = sqlalchemy.create_engine(race, max_overflow=-1)
                 sess = Session(db)
                 categories = sess.scalars(Select(Category)).all()
 
@@ -134,43 +313,35 @@ class StagesHelperWindow(QWidget):
                             runner))
             cats_results[cat] = sorted(res, key=lambda x: x[1] if self.basic_radio.isChecked() else x[2])
 
-        with open(fn, "w") as f:
-            csvw = csv.writer(f, delimiter=";")
-            csvw.writerows(
-                [["Děkuji, že k datům uvádíte atribuci:",
-                  '"Data pocházejí ze StageHelper pro ARDFEvent, (C) Jakub Jiroutek"'],
-                 []])
+        categories = []
+        for cat_res in cats_results.keys():
+            runners = []
+            last_res = None
+            last_place = 0
+            for i, res in enumerate(cats_results[cat_res]):
+                if (res[1] if self.basic_radio.isChecked() else res[2][:2]) != last_res:
+                    last_place = i + 1
+                    last_res = res[1] if self.basic_radio.isChecked() else res[2][:2]
+                individual_res = []
+                for result in res[3]:
+                    individual_res.append(
+                        f"{results.format_delta(timedelta(seconds=result[2]))}, {result[3]} TX ({result[1]})")
+                runners.append({"place": f"{last_place}.", "name": res[0],
+                                "time": results.format_delta(timedelta(seconds=res[2][1])), "tx": f"{-res[2][0]} TX",
+                                "places": res[1], "results": [
+                        f"{results.format_delta(timedelta(seconds=r[2]))}, {r[3]} TX ({r[1]})" for
+                        r in res[3]]})
+            categories.append({"name": cat_res, "runners": runners})
 
-            if dsq_without_ok_result:
-                csvw.writerows(
-                    [["Nezařazeni kvůli nedostatku OK výsledků:"]] + list(
-                        map(lambda x: [x], dsq_without_ok_result)) + [[]])
+        env = Environment(
+            loader=FileSystemLoader(Path(__file__).parent.absolute()), autoescape=select_autoescape()
+        )
 
-            if dsq_multiple_categories:
-                csvw.writerows(
-                    [["Nezařazeni kvůli účasti ve více kategoriích:"]] + list(
-                        map(lambda x: [x], dsq_multiple_categories)) + [[]])
-
-            csvw.writerows([["Metoda vyhodnocení:",
-                             "Prostý součet umístění" if self.basic_radio.isChecked() else "Součet kontrol a časů"],
-                            ["Pro zařazení do celkových výsledků musí být závodník hodnocen ve všech etapách v jedné kategorii."],
-                            []])
-
-            for cat_res in cats_results.keys():
-                csvw.writerow([cat_res, "", "Σ Čas", "Σ TX", "Σ Umístění"] + headers)
-                last_res = None
-                last_place = 0
-                for i, res in enumerate(cats_results[cat_res]):
-                    if (res[1] if self.basic_radio.isChecked() else res[2][:2]) != last_res:
-                        last_place = i + 1
-                        last_res = res[1] if self.basic_radio.isChecked() else res[2][:2]
-                    individual_res = []
-                    for result in res[3]:
-                        individual_res.append(
-                            f"{results.format_delta(timedelta(seconds=result[2]))}, {result[3]} TX ({result[1]})")
-                    csvw.writerow([f"{last_place}.", res[0], results.format_delta(timedelta(seconds=res[2][1])),
-                                   f"{-res[2][0]} TX", res[1]] + individual_res)
-                csvw.writerow([])
+        return env.get_template("results_templ.html").render(
+            event=self._get_html_event(), dsq_without_ok_result=dsq_without_ok_result,
+            dsq_multiple_categories=dsq_multiple_categories, categories=categories,
+            method=("Prostý součet umístění" if self.basic_radio.isChecked() else "Součet kontrol a časů")
+        )
 
 
 fileplugin = StagesPlugin
