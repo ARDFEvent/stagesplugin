@@ -27,7 +27,7 @@ from ui.qtaiconbutton import QTAIconButton
 class StagesPlugin(Plugin):
     name = "StageHelper"
     author = "JJ"
-    version = "1.1.0"
+    version = "1.1.1"
 
     def __init__(self, mw):
         super().__init__(mw)
@@ -121,7 +121,6 @@ class StagesHelperWindow(QWidget):
                             self.stages_list.setEnabled(True)
                             self.basic_radio.setEnabled(True)
                             self.timetx_radio.setEnabled(True)
-                            self.new_btn.setEnabled(True)
                             self.add_btn.setEnabled(True)
                             self.del_btn.setEnabled(True)
                             return
@@ -132,7 +131,6 @@ class StagesHelperWindow(QWidget):
         self.stages_list.setEnabled(False)
         self.basic_radio.setEnabled(False)
         self.timetx_radio.setEnabled(False)
-        self.new_btn.setEnabled(False)
         self.add_btn.setEnabled(False)
         self.del_btn.setEnabled(False)
         self.name_lbl.setText("Nejdříve založte etapový závod")
@@ -338,8 +336,8 @@ class StagesHelperWindow(QWidget):
         )
 
         return env.get_template("results_templ.html").render(
-            event=self._get_html_event(), dsq_without_ok_result=dsq_without_ok_result,
-            dsq_multiple_categories=dsq_multiple_categories, categories=categories,
+            event=self._get_html_event(), dsq_without_ok_result=sorted(dsq_without_ok_result),
+            dsq_multiple_categories=sorted(dsq_multiple_categories), categories=categories,
             method=("Prostý součet umístění" if self.basic_radio.isChecked() else "Součet kontrol a časů")
         )
 
